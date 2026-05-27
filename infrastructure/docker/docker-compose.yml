@@ -1,0 +1,104 @@
+version: "3.9"
+
+services:
+  # ── PostgreSQL (Aurora-compatible) ──────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: lp-postgres
+    environment:
+      POSTGRES_DB: loanplatform
+      POSTGRES_USER: lpadmin
+      POSTGRES_PASSWORD: localdev_password_only
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/src/database/migrations:/docker-entrypoint-initdb.d/migrations:ro
+      - ./backend/src/database/seeds:/docker-entrypoint-initdb.d/seeds:ro
+      - ./infrastructure/docker/postgres-init.sh:/docker-entrypoint-initdb.d/00_init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lpadmin -d loanplatform"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── LocalStack (AWS services locally) ───────────────────────────────────────
+  localstack:
+    image: localstack/localstack:3
+    container_name: lp-localstack
+    environment:
+      SERVICES: s3,kms,cognito-idp,events,ecs
+      DEFAULT_REGION: us-east-1
+      DEBUG: 0
+    ports:
+      - "4566:4566"
+    volumes:
+      - localstack_data:/var/lib/localstack
+      - ./infrastructure/docker/localstack-init.sh:/etc/localstack/init/ready.d/init.sh:ro
+
+  # ── NestJS Backend ───────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: development
+    container_name: lp-backend
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DATABASE_URL: postgresql://lpadmin:localdev_password_only@postgres:5432/loanplatform
+      DATABASE_SSL: "false"
+      AWS_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      COGNITO_USER_POOL_ID: us-east-1_TEST
+      COGNITO_CLIENT_ID: test-client-id
+      KMS_KEY_ARN: arn:aws:kms:us-east-1:000000000000:key/test-key
+      S3_EXPORT_BUCKET: loan-platform-dev-exports
+      JWT_ISSUER: http://localstack:4566
+      LOG_LEVEL: debug
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./backend/src:/app/src
+      - /app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_started
+    command: ["npm", "run", "start:dev"]
+
+  # ── Next.js Frontend ─────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: development
+    container_name: lp-frontend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3000/api/v1
+      NEXT_PUBLIC_COGNITO_USER_POOL_ID: us-east-1_TEST
+      NEXT_PUBLIC_COGNITO_CLIENT_ID: test-client-id
+      NEXT_PUBLIC_AWS_REGION: us-east-1
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./frontend/src:/app/src
+      - /app/node_modules
+    depends_on:
+      - backend
+    command: ["npm", "run", "dev"]
+
+  # ── Redis (session / cache) ───────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: lp-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass localdev_redis
+
+volumes:
+  postgres_data:
+  localstack_data:

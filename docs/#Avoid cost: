@@ -1,0 +1,41 @@
+#Avoid cost:
+
+# Scale ECS tasks to zero (stops the app, keeps data)
+aws ecs update-service \
+  --cluster prod-loan-platform \
+  --service prod-loan-platform-backend \
+  --desired-count 0
+
+# Scale back up when needed
+aws ecs update-service \
+  --cluster prod-loan-platform \
+  --service prod-loan-platform-backend \
+  --desired-count 2
+
+
+  What to Do After Going Live
+
+Set up billing alerts so you're not surprised:
+
+AWS Console → Billing → Budgets → Create budget
+Set a monthly limit (e.g. $200) and get emailed at 80%
+
+
+Enable GuardDuty (threat detection, ~$3/month):
+
+AWS Console → GuardDuty → Enable
+
+
+Set up CloudWatch dashboard:
+
+AWS Console → CloudWatch → Dashboards → Create dashboard
+Add widgets for ECS CPU, DB connections, ALB request count
+
+
+Backups: Aurora automatically backs up daily with 35-day retention (already configured)
+Updates: When you change code, rebuild and push the Docker image, then:
+
+aws ecs update-service \
+     --cluster prod-loan-platform \
+     --service prod-loan-platform-backend \
+     --force-new-deployment

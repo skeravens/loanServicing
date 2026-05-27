@@ -1,0 +1,808 @@
+openapi: 3.1.0
+info:
+  title: Loan Servicing Platform API
+  version: 1.0.0
+  description: |
+    Multi-tenant SaaS loan servicing platform.
+    All endpoints require a valid Cognito JWT and a `x-tenant-id` header.
+    Actual/360 interest accrual engine.
+  contact:
+    name: Engineering Team
+    email: engineering@loanplatform.io
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.loanplatform.io/api/v1
+    description: Production
+  - url: https://staging-api.loanplatform.io/api/v1
+    description: Staging
+  - url: http://localhost:3000/api/v1
+    description: Local development
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Loans
+    description: Core loan lifecycle management
+  - name: Disbursements
+    description: Funding disbursements
+  - name: Payments
+    description: Payment application and history
+  - name: Schedule
+    description: Repayment schedule
+  - name: Fees
+    description: Loan fees management
+  - name: Borrowers
+    description: Borrower management
+  - name: Reports
+    description: Portfolio analytics and reporting
+  - name: Custom Fields
+    description: Dynamic field management
+
+paths:
+  # ── LOANS ─────────────────────────────────────────────────────────────────────
+
+  /loans:
+    post:
+      tags: [Loans]
+      operationId: createLoan
+      summary: Create a new loan
+      security: [{BearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateLoanRequest'
+            examples:
+              fixedRate:
+                summary: Fixed rate loan
+                value:
+                  loanAmount: 500000
+                  interestType: FIXED
+                  fixedRate: 0.085
+                  interestMethod: ACTUAL_360
+                  loanTermMonths: 60
+                  originationDate: "2024-01-15"
+                  paymentFrequency: MONTHLY
+                  purpose: "Commercial Real Estate"
+                  borrowers:
+                    - borrowerId: "33333333-0000-0000-0000-000000000001"
+                      role: PRIMARY
+              floatingRate:
+                summary: Floating rate loan
+                value:
+                  loanAmount: 250000
+                  interestType: FLOATING
+                  indexRateName: SOFR
+                  marginRate: 0.025
+                  interestMethod: ACTUAL_360
+                  maturityDate: "2027-03-01"
+                  originationDate: "2024-03-01"
+                  paymentFrequency: MONTHLY
+                  borrowers:
+                    - borrowerId: "33333333-0000-0000-0000-000000000002"
+                      role: PRIMARY
+      responses:
+        '201':
+          description: Loan created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Loan'
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+    get:
+      tags: [Loans]
+      operationId: listLoans
+      summary: List loans
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/LoanStatus'
+          style: form
+          explode: true
+        - in: query
+          name: fromDate
+          schema: {type: string, format: date}
+        - in: query
+          name: toDate
+          schema: {type: string, format: date}
+        - in: query
+          name: borrowerId
+          schema: {type: string, format: uuid}
+        - in: query
+          name: search
+          schema: {type: string}
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/limit'}
+      responses:
+        '200':
+          description: Paginated list of loans
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedLoans'
+
+  /loans/{loanId}:
+    get:
+      tags: [Loans]
+      operationId: getLoan
+      summary: Get loan details
+      parameters:
+        - {$ref: '#/components/parameters/loanId'}
+      responses:
+        '200':
+          description: Loan details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoanDetail'
+        '404': {$ref: '#/components/responses/NotFound'}
+
+    put:
+      tags: [Loans]
+      operationId: updateLoan
+      summary: Update loan non-financial fields
+      parameters:
+        - {$ref: '#/components/parameters/loanId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateLoanRequest'
+      responses:
+        '200':
+          description: Updated loan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Loan'
+
+  /loans/{loanId}/activate:
+    post:
+      tags: [Loans]
+      operationId: activateLoan
+      summary: Activate loan after first disbursement
+      parameters:
+        - {$ref: '#/components/parameters/loanId'}
+      responses:
+        '200':
+          description: Loan activated and schedule generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Loan'
+
+  /loans/{loanId}/modify:
+    post:
+      tags: [Loans]
+      operationId: modifyLoan
+      summary: Modify loan terms (triggers schedule recalculation)
+      parameters:
+        - {$ref: '#/components/parameters/loanId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModifyLoanRequest'
+      responses:
+        '200':
+          description: Loan modified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Loan'
+
+  # ── DISBURSEMENTS ─────────────────────────────────────────────────────────────
+
+  /loans/{loanId}/disbursements:
+    post:
+      tags: [Disbursements]
+      operationId: createDisbursement
+      summary: Create a disbursement
+      parameters:
+        - {$ref: '#/components/parameters/loanId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDisbursementRequest'
+            example:
+              amount: 500000
+              prepaidFee: 2500
+              disbursementDate: "2024-01-15"
+              effectiveDate: "2024-01-15"
+              reference: "WIRE-20240115-001"
+      responses:
+        '201':
+          description: Disbursement created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Disbursement'
+        '400':
+          description: Total disbursements would exceed loan amount
+
+    get:
+      tags: [Disbursements]
+      operationId: listDisbursements
+      summary: List disbursements for a loan
+      parameters:
+        - {$ref: '#/components/parameters/loanId'}
+      responses:
+        '200':
+          description: List of disbursements
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Disbursement'
+
+  # ── PAYMENTS ──────────────────────────────────────────────────────────────────
+
+  /loans/{loanId}/payments:
+    post:
+      tags: [Payments]
+      operationId: applyPayment
+      summary: Apply payment with manual allocation
+      parameters:
+        - {$ref: '#/components/parameters/loanId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePaymentRequest'
+            examples:
+              standard:
+                summary: Interest + principal payment
+                value:
+                  paymentDate: "2024-02-15"
+                  paymentAmount: 10234.56
+                  paymentMethod: ACH
+                  reference: "ACH-2024-0215"
+                  allocations:
+                    - bucket: INTEREST
+                      amount: 3541.67
+                      scheduleItemId: "schedule-item-uuid"
+                    - bucket: PRINCIPAL
+                      amount: 6692.89
+                      scheduleItemId: "schedule-item-uuid"
+              withFee:
+                summary: Payment including fee
+                value:
+                  paymentDate: "2024-03-15"
+                  paymentAmount: 10384.56
+                  allocations:
+                    - bucket: INTEREST
+                      amount: 3541.67
+                    - bucket: PRINCIPAL
+                      amount: 6692.89
+                    - bucket: FEE
+                      amount: 150.00
+                      feeId: "fee-uuid"
+      responses:
+        '201':
+          description: Payment applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+
+    get:
+      tags: [Payments]
+      operationId: getPaymentHistory
+      summary: Get payment history
+      parameters:
+        - {$ref: '#/components/parameters/loanId'}
+        - {$ref: '#/components/parameters/page'}
+        - {$ref: '#/components/parameters/limit'}
+      responses:
+        '200':
+          description: Payment history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedPayments'
+
+  /loans/{loanId}/payments/preview:
+    post:
+      tags: [Payments]
+      operationId: previewPayment
+      summary: Preview payment allocation (dry-run, no changes applied)
+      parameters:
+        - {$ref: '#/components/parameters/loanId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [paymentAmount]
+              properties:
+                paymentAmount:
+                  type: number
+                  format: decimal
+      responses:
+        '200':
+          description: Suggested allocations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentPreview'
+
+  # ── SCHEDULE ──────────────────────────────────────────────────────────────────
+
+  /loans/{loanId}/schedule:
+    get:
+      tags: [Schedule]
+      operationId: getSchedule
+      summary: Get repayment schedule
+      parameters:
+        - {$ref: '#/components/parameters/loanId'}
+      responses:
+        '200':
+          description: Amortization schedule
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ScheduleItem'
+
+  # ── REPORTS ───────────────────────────────────────────────────────────────────
+
+  /reports/active-loans:
+    get:
+      tags: [Reports]
+      operationId: getActiveLoansReport
+      summary: Active loans portfolio summary
+      responses:
+        '200':
+          description: Active loans report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActiveLoansReport'
+
+  /reports/delinquency:
+    get:
+      tags: [Reports]
+      operationId: getDelinquencyReport
+      summary: Delinquency report by bucket
+      responses:
+        '200':
+          description: Delinquency report
+
+  /reports/amount-due:
+    get:
+      tags: [Reports]
+      operationId: getAmountDueReport
+      summary: Amount due in date range
+      parameters:
+        - in: query
+          name: fromDate
+          required: true
+          schema: {type: string, format: date}
+        - in: query
+          name: toDate
+          required: true
+          schema: {type: string, format: date}
+      responses:
+        '200':
+          description: Amount due report
+
+  /reports/export:
+    post:
+      tags: [Reports]
+      operationId: exportToSnowflake
+      summary: Export report to S3 for Snowflake ingestion
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reportType]
+              properties:
+                reportType:
+                  type: string
+                  enum: [ACTIVE_LOANS, DELINQUENCY, AMOUNT_DUE]
+                fromDate:
+                  type: string
+                  format: date
+                toDate:
+                  type: string
+                  format: date
+      responses:
+        '200':
+          description: Export triggered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  s3Key: {type: string}
+                  recordCount: {type: integer}
+
+# ── COMPONENTS ────────────────────────────────────────────────────────────────
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: AWS Cognito JWT
+
+  parameters:
+    loanId:
+      in: path
+      name: loanId
+      required: true
+      schema: {type: string, format: uuid}
+    page:
+      in: query
+      name: page
+      schema: {type: integer, default: 1, minimum: 1}
+    limit:
+      in: query
+      name: limit
+      schema: {type: integer, default: 20, minimum: 1, maximum: 100}
+
+  schemas:
+    LoanStatus:
+      type: string
+      enum: [PENDING, ACTIVE, CURRENT, DELINQUENT, DEFAULT, PAID_OFF, CANCELLED]
+
+    InterestType:
+      type: string
+      enum: [FIXED, FLOATING]
+
+    PaymentFrequency:
+      type: string
+      enum: [DAILY, WEEKLY, BIWEEKLY, MONTHLY, QUARTERLY, SEMIANNUAL, ANNUAL, BULLET]
+
+    BorrowerRole:
+      type: string
+      enum: [PRIMARY, CO_BORROWER, GUARANTOR]
+
+    CreateLoanRequest:
+      type: object
+      required: [loanAmount, interestType, interestMethod, originationDate, paymentFrequency]
+      properties:
+        loanAmount:
+          type: number
+          format: decimal
+          minimum: 0.01
+          example: 500000
+        interestType:
+          $ref: '#/components/schemas/InterestType'
+        fixedRate:
+          type: number
+          format: decimal
+          description: Required for FIXED type (e.g. 0.085 = 8.5%)
+        indexRateName:
+          type: string
+          description: Required for FLOATING type (e.g. SOFR, PRIME)
+        marginRate:
+          type: number
+          format: decimal
+          description: Required for FLOATING type
+        interestMethod:
+          type: string
+          enum: [ACTUAL_360, ACTUAL_365, 30_360]
+          default: ACTUAL_360
+        loanTermMonths:
+          type: integer
+          description: Provide either loanTermMonths or maturityDate
+        maturityDate:
+          type: string
+          format: date
+        originationDate:
+          type: string
+          format: date
+        firstPaymentDate:
+          type: string
+          format: date
+        paymentFrequency:
+          $ref: '#/components/schemas/PaymentFrequency'
+        purpose:
+          type: string
+        notes:
+          type: string
+        borrowers:
+          type: array
+          items:
+            type: object
+            required: [borrowerId]
+            properties:
+              borrowerId:
+                type: string
+                format: uuid
+              role:
+                $ref: '#/components/schemas/BorrowerRole'
+              ownershipPct:
+                type: number
+                minimum: 0
+                maximum: 100
+
+    Loan:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        tenantId: {type: string, format: uuid}
+        loanNumber: {type: string}
+        status: {$ref: '#/components/schemas/LoanStatus'}
+        loanAmount: {type: number}
+        outstandingBalance: {type: number}
+        accruedInterest: {type: number}
+        interestType: {$ref: '#/components/schemas/InterestType'}
+        fixedRate: {type: number, nullable: true}
+        indexRateName: {type: string, nullable: true}
+        indexRate: {type: number, nullable: true}
+        marginRate: {type: number, nullable: true}
+        interestMethod: {type: string}
+        loanTermMonths: {type: integer, nullable: true}
+        originationDate: {type: string, format: date}
+        maturityDate: {type: string, format: date}
+        paymentFrequency: {$ref: '#/components/schemas/PaymentFrequency'}
+        nextPaymentDate: {type: string, format: date, nullable: true}
+        daysPastDue: {type: integer}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+
+    LoanDetail:
+      allOf:
+        - $ref: '#/components/schemas/Loan'
+        - type: object
+          properties:
+            loanBorrowers:
+              type: array
+              items:
+                $ref: '#/components/schemas/LoanBorrower'
+            disbursements:
+              type: array
+              items:
+                $ref: '#/components/schemas/Disbursement'
+            fees:
+              type: array
+              items:
+                $ref: '#/components/schemas/Fee'
+
+    Disbursement:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        loanId: {type: string, format: uuid}
+        disbursementNumber: {type: integer}
+        status:
+          type: string
+          enum: [PENDING, APPROVED, DISBURSED, CANCELLED]
+        amount: {type: number}
+        prepaidFee: {type: number}
+        netAmount: {type: number}
+        disbursementDate: {type: string, format: date}
+        effectiveDate: {type: string, format: date}
+        reference: {type: string, nullable: true}
+
+    Payment:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        loanId: {type: string, format: uuid}
+        paymentNumber: {type: integer}
+        paymentDate: {type: string, format: date}
+        paymentAmount: {type: number}
+        status:
+          type: string
+          enum: [PENDING, APPLIED, REVERSED, FAILED]
+        paymentMethod: {type: string, nullable: true}
+        reference: {type: string, nullable: true}
+        allocations:
+          type: array
+          items:
+            $ref: '#/components/schemas/PaymentAllocation'
+
+    PaymentAllocation:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        bucket:
+          type: string
+          enum: [PRINCIPAL, INTEREST, FEE, PREPAYMENT]
+        amount: {type: number}
+        scheduleItemId: {type: string, format: uuid, nullable: true}
+
+    ScheduleItem:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        periodNumber: {type: integer}
+        dueDate: {type: string, format: date}
+        beginningBalance: {type: number}
+        scheduledPrincipal: {type: number}
+        scheduledInterest: {type: number}
+        scheduledFees: {type: number}
+        scheduledTotal: {type: number}
+        paidPrincipal: {type: number}
+        paidInterest: {type: number}
+        paidFees: {type: number}
+        endingBalance: {type: number}
+        status:
+          type: string
+          enum: [PENDING, PARTIAL, PAID, OVERDUE, WAIVED]
+        rateSnapshot: {type: number}
+
+    Fee:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        feeName: {type: string}
+        feeType: {type: string}
+        amount: {type: number}
+        amountPaid: {type: number}
+        dueDate: {type: string, format: date}
+        status:
+          type: string
+          enum: [OUTSTANDING, PARTIAL, PAID, WAIVED]
+
+    LoanBorrower:
+      type: object
+      properties:
+        borrowerId: {type: string, format: uuid}
+        role: {$ref: '#/components/schemas/BorrowerRole'}
+        ownershipPct: {type: number, nullable: true}
+
+    ActiveLoansReport:
+      type: object
+      properties:
+        snapshotDate: {type: string, format: date}
+        totalLoans: {type: integer}
+        totalOutstanding: {type: number}
+        totalAccruedInterest: {type: number}
+        byStatus:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              count: {type: integer}
+              balance: {type: number}
+        byInterestType:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              count: {type: integer}
+              balance: {type: number}
+        loans:
+          type: array
+          items:
+            type: object
+
+    PaymentPreview:
+      type: object
+      properties:
+        paymentAmount: {type: number}
+        accruedInterest: {type: number}
+        outstandingBalance: {type: number}
+        suggestions:
+          type: array
+          items:
+            type: object
+            properties:
+              bucket: {type: string}
+              amount: {type: number}
+              description: {type: string}
+
+    PaginatedLoans:
+      type: object
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Loan'}
+        total: {type: integer}
+        page: {type: integer}
+        limit: {type: integer}
+        pages: {type: integer}
+
+    PaginatedPayments:
+      type: object
+      properties:
+        payments:
+          type: array
+          items: {$ref: '#/components/schemas/Payment'}
+        total: {type: integer}
+        page: {type: integer}
+        limit: {type: integer}
+
+    CreateDisbursementRequest:
+      type: object
+      required: [amount, disbursementDate, effectiveDate]
+      properties:
+        amount: {type: number, minimum: 0.01}
+        prepaidFee: {type: number, minimum: 0, default: 0}
+        disbursementDate: {type: string, format: date}
+        effectiveDate: {type: string, format: date}
+        reference: {type: string}
+        notes: {type: string}
+
+    CreatePaymentRequest:
+      type: object
+      required: [paymentDate, paymentAmount, allocations]
+      properties:
+        paymentDate: {type: string, format: date}
+        paymentAmount: {type: number, minimum: 0.01}
+        paymentMethod: {type: string}
+        reference: {type: string}
+        notes: {type: string}
+        allocations:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [bucket, amount]
+            properties:
+              bucket:
+                type: string
+                enum: [PRINCIPAL, INTEREST, FEE, PREPAYMENT]
+              amount: {type: number, minimum: 0.01}
+              scheduleItemId: {type: string, format: uuid}
+              feeId: {type: string, format: uuid}
+
+    ModifyLoanRequest:
+      type: object
+      required: [effectiveDate]
+      properties:
+        effectiveDate: {type: string, format: date}
+        fixedRate: {type: number, description: New fixed rate (FIXED loans only)}
+        marginRate: {type: number, description: New margin (FLOATING loans only)}
+        newMaturityDate: {type: string, format: date}
+        modificationType: {type: string, default: GENERAL}
+        reason: {type: string}
+
+    UpdateLoanRequest:
+      type: object
+      properties:
+        purpose: {type: string}
+        notes: {type: string}
+        customFields: {type: object}
+
+    ErrorResponse:
+      type: object
+      properties:
+        statusCode: {type: integer}
+        message: {type: string}
+        error: {type: string}
+        timestamp: {type: string, format: date-time}
+        path: {type: string}
+
+  responses:
+    BadRequest:
+      description: Validation error
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+    Unauthorized:
+      description: Missing or invalid authentication
+    Forbidden:
+      description: Insufficient permissions for this role
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
